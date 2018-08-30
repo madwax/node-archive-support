@@ -31,6 +31,7 @@
 #include "node_perf.h"
 #include "node_context_data.h"
 #include "tracing/traced_value.h"
+#include "archive/manager.h"
 
 #if defined HAVE_PERFCTR
 #include "node_counters.h"
@@ -1311,7 +1312,8 @@ class DLib {
 
 #ifdef __POSIX__
 bool DLib::Open() {
-  handle_ = dlopen(filename_.c_str(), flags_);
+  std::string true_filename = archive::Manager::Get()->GetTrueFileName(filename_);
+  handle_ = dlopen(true_filename.c_str(), flags_);
   if (handle_ != nullptr)
     return true;
   errmsg_ = dlerror();
@@ -1329,7 +1331,8 @@ void* DLib::GetSymbolAddress(const char* name) {
 }
 #else  // !__POSIX__
 bool DLib::Open() {
-  int ret = uv_dlopen(filename_.c_str(), &lib_);
+  std::string true_filename = archive::Manager::Get()->GetTrueFileName(filename_);
+  int ret = uv_dlopen(true_filename.c_str(), &lib_);
   if (ret == 0) {
     handle_ = static_cast<void*>(lib_.handle);
     return true;
@@ -2978,7 +2981,13 @@ static void ParseArgs(int* argc,
       config_experimental_worker = true;
     } else if (strcmp(arg, "--experimental-repl-await") == 0) {
       config_experimental_repl_await = true;
-    }  else if (strcmp(arg, "--loader") == 0) {
+    } else if (strcmp(arg, "--archive.path") == 0) {
+      args_consumed += 1;
+    } else if (strcmp(arg, "--archive.mount") == 0) {
+      args_consumed += 1;
+    } else if (strcmp(arg, "--archive.trace") == 0) {
+      args_consumed += 1;
+    } else if (strcmp(arg, "--loader") == 0) {
       const char* module = argv[index + 1];
       if (!config_experimental_modules) {
         fprintf(stderr, "%s: %s requires --experimental-modules be enabled\n",
@@ -3809,6 +3818,14 @@ int Start(int argc, char** argv) {
   performance::performance_node_start = PERFORMANCE_NOW();
 
   CHECK_GT(argc, 0);
+
+  archive::Manager archive_manager;
+
+  if(archive_manager.Init(uv_default_loop(), argc, argv) == false)
+  {
+    printf( "WHAT THE\n" );
+    return 1;
+  }
 
   // Hack around with the argv pointer. Used for process.title = "blah".
   argv = uv_setup_args(argc, argv);

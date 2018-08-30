@@ -322,6 +322,11 @@
       ],
 
       'sources': [
+        'src/archive/junzip.c',
+        'src/archive/archive.cc',
+        'src/archive/manager.cc',
+        'src/archive/archive_junzip.cc',
+        'src/archive/uv_schedule_delay.cc',      
         'src/async_wrap.cc',
         'src/bootstrapper.cc',
         'src/callback_scope.cc',
@@ -390,6 +395,11 @@
         'src/util.cc',
         'src/uv.cc',
         # headers to make for a more pleasant IDE experience
+        'src/archive/junzip.h',
+        'src/archive/archive.h',
+        'src/archive/manager.h',
+        'src/archive/archive_junzip.h',
+        'src/archive/uv_schedule_delay.h',        
         'src/aliased_buffer.h',
         'src/async_wrap.h',
         'src/async_wrap-inl.h',

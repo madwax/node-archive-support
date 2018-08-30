@@ -12,6 +12,8 @@
 #include "util.h"
 #include "zlib.h"
 
+#include "archive/manager.h"
+
 #include <deque>
 #include <string.h>
 #include <vector>
@@ -28,11 +30,11 @@ std::string ScriptPath(uv_loop_t* loop, const std::string& script_name) {
   if (!script_name.empty()) {
     uv_fs_t req;
     req.ptr = nullptr;
-    if (0 == uv_fs_realpath(loop, &req, script_name.c_str(), nullptr)) {
+    if (0 == archive::uv_fs_realpath(loop, &req, script_name.c_str(), nullptr)) {
       CHECK_NOT_NULL(req.ptr);
       script_path = std::string(static_cast<char*>(req.ptr));
     }
-    uv_fs_req_cleanup(&req);
+    archive::uv_fs_req_cleanup(&req);
   }
 
   return script_path;

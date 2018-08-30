@@ -24,6 +24,7 @@
 #include "async_wrap-inl.h"
 #include "env-inl.h"
 #include "util-inl.h"
+#include "archive/manager.h"
 
 #include <string.h>
 #include <stdlib.h>

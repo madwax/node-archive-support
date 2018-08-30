@@ -26,7 +26,7 @@
 #include "node_internals.h"
 #include "handle_wrap.h"
 #include "string_bytes.h"
-
+#include "archive/manager.h"
 
 namespace node {
 

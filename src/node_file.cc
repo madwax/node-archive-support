@@ -30,6 +30,7 @@
 #include "stream_base-inl.h"
 #include "string_bytes.h"
 #include "string_search.h"
+#include "archive/manager.h"
 
 #include <fcntl.h>
 #include <sys/types.h>
@@ -151,8 +152,8 @@ FileHandle::~FileHandle() {
 inline void FileHandle::Close() {
   if (closed_) return;
   uv_fs_t req;
-  int ret = uv_fs_close(env()->event_loop(), &req, fd_, nullptr);
-  uv_fs_req_cleanup(&req);
+  int ret = archive::uv_fs_close(env()->event_loop(), &req, fd_, nullptr);
+  archive::uv_fs_req_cleanup(&req);
   AfterClose();
 
   struct err_detail { int ret; int fd; };
@@ -242,7 +243,7 @@ inline MaybeLocal<Promise> FileHandle::ClosePromise() {
       }
       delete close;
     }};
-    int ret = req->Dispatch(uv_fs_close, fd_, AfterClose);
+    int ret = req->Dispatch(archive::uv_fs_close, fd_, AfterClose);
     if (ret < 0) {
       req->Reject(UVException(isolate, ret, "close"));
       delete req;
@@ -325,7 +326,7 @@ int FileHandle::ReadStart() {
 
   current_read_ = std::move(read_wrap);
 
-  current_read_->Dispatch(uv_fs_read,
+  current_read_->Dispatch(archive::uv_fs_read,
                           fd_,
                           &current_read_->buffer_,
                           1,
@@ -347,7 +348,7 @@ int FileHandle::ReadStart() {
     int result = req->result;
     uv_buf_t buffer = read_wrap->buffer_;
 
-    uv_fs_req_cleanup(req);
+    archive::uv_fs_req_cleanup(req);
 
     // Push the read wrap back to the freelist, or let it be destroyed
     // once we’re exiting the current scope.
@@ -402,14 +403,14 @@ ShutdownWrap* FileHandle::CreateShutdownWrap(Local<Object> object) {
 int FileHandle::DoShutdown(ShutdownWrap* req_wrap) {
   FileHandleCloseWrap* wrap = static_cast<FileHandleCloseWrap*>(req_wrap);
   closing_ = true;
-  wrap->Dispatch(uv_fs_close, fd_, uv_fs_callback_t{[](uv_fs_t* req) {
+  wrap->Dispatch(archive::uv_fs_close, fd_, uv_fs_callback_t{[](uv_fs_t* req) {
     FileHandleCloseWrap* wrap = static_cast<FileHandleCloseWrap*>(
         FileHandleCloseWrap::from_req(req));
     FileHandle* handle = static_cast<FileHandle*>(wrap->stream());
     handle->AfterClose();
 
     int result = req->result;
-    uv_fs_req_cleanup(req);
+    archive::uv_fs_req_cleanup(req);
     wrap->Done(result);
   }});
 
@@ -454,7 +455,7 @@ FSReqAfterScope::FSReqAfterScope(FSReqBase* wrap, uv_fs_t* req)
 }
 
 FSReqAfterScope::~FSReqAfterScope() {
-  uv_fs_req_cleanup(wrap_->req());
+  archive::uv_fs_req_cleanup(wrap_->req());
   delete wrap_;
 }
 
@@ -575,7 +576,7 @@ void AfterScanDir(uv_fs_t* req) {
   for (int i = 0; ; i++) {
     uv_dirent_t ent;
 
-    r = uv_fs_scandir_next(req, &ent);
+    r = archive::uv_fs_scandir_next(req, &ent);
     if (r == UV_EOF)
       break;
     if (r != 0) {
@@ -634,7 +635,7 @@ void AfterScanDirWithTypes(uv_fs_t* req) {
   for (int i = 0; ; i++) {
     uv_dirent_t ent;
 
-    r = uv_fs_scandir_next(req, &ent);
+    r = archive::uv_fs_scandir_next(req, &ent);
     if (r == UV_EOF)
       break;
     if (r != 0) {
@@ -702,7 +703,7 @@ void AfterScanDirWithTypes(uv_fs_t* req) {
 class FSReqWrapSync {
  public:
   FSReqWrapSync() {}
-  ~FSReqWrapSync() { uv_fs_req_cleanup(&req); }
+  ~FSReqWrapSync() { archive::uv_fs_req_cleanup(&req); }
   uv_fs_t req;
 
  private:
@@ -797,12 +798,12 @@ void Access(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
   if (req_wrap_async != nullptr) {  // access(path, mode, req)
     AsyncCall(env, req_wrap_async, args, "access", UTF8, AfterNoArgs,
-              uv_fs_access, *path, mode);
+              archive::uv_fs_access, *path, mode);
   } else {  // access(path, mode, undefined, ctx)
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(access);
-    SyncCall(env, args[3], &req_wrap_sync, "access", uv_fs_access, *path, mode);
+    SyncCall(env, args[3], &req_wrap_sync, "access", archive::uv_fs_access, *path, mode);
     FS_SYNC_TRACE_END(access);
   }
 }
@@ -820,12 +821,12 @@ void Close(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[1]);
   if (req_wrap_async != nullptr) {  // close(fd, req)
     AsyncCall(env, req_wrap_async, args, "close", UTF8, AfterNoArgs,
-              uv_fs_close, fd);
+              archive::uv_fs_close, fd);
   } else {  // close(fd, undefined, ctx)
     CHECK_EQ(argc, 3);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(close);
-    SyncCall(env, args[2], &req_wrap_sync, "close", uv_fs_close, fd);
+    SyncCall(env, args[2], &req_wrap_sync, "close", archive::uv_fs_close, fd);
     FS_SYNC_TRACE_END(close);
   }
 }
@@ -845,8 +846,8 @@ static void InternalModuleReadJSON(const FunctionCallbackInfo<Value>& args) {
     return;  // Contains a nul byte.
 
   uv_fs_t open_req;
-  const int fd = uv_fs_open(loop, &open_req, *path, O_RDONLY, 0, nullptr);
-  uv_fs_req_cleanup(&open_req);
+  const int fd = archive::uv_fs_open(loop, &open_req, *path, O_RDONLY, 0, nullptr);
+  archive::uv_fs_req_cleanup(&open_req);
 
   if (fd < 0) {
     return;
@@ -854,8 +855,8 @@ static void InternalModuleReadJSON(const FunctionCallbackInfo<Value>& args) {
 
   std::shared_ptr<void> defer_close(nullptr, [fd, loop] (...) {
     uv_fs_t close_req;
-    CHECK_EQ(0, uv_fs_close(loop, &close_req, fd, nullptr));
-    uv_fs_req_cleanup(&close_req);
+    CHECK_EQ(0, archive::uv_fs_close(loop, &close_req, fd, nullptr));
+    archive::uv_fs_req_cleanup(&close_req);
   });
 
   const size_t kBlockSize = 32 << 10;
@@ -871,8 +872,8 @@ static void InternalModuleReadJSON(const FunctionCallbackInfo<Value>& args) {
     buf.len = kBlockSize;
 
     uv_fs_t read_req;
-    numchars = uv_fs_read(loop, &read_req, fd, &buf, 1, offset, nullptr);
-    uv_fs_req_cleanup(&read_req);
+    numchars = archive::uv_fs_read(loop, &read_req, fd, &buf, 1, offset, nullptr);
+    archive::uv_fs_req_cleanup(&read_req);
 
     if (numchars < 0)
       return;
@@ -908,12 +909,12 @@ static void InternalModuleStat(const FunctionCallbackInfo<Value>& args) {
   node::Utf8Value path(env->isolate(), args[0]);
 
   uv_fs_t req;
-  int rc = uv_fs_stat(env->event_loop(), &req, *path, nullptr);
+  int rc = archive::uv_fs_stat(env->event_loop(), &req, *path, nullptr);
   if (rc == 0) {
     const uv_stat_t* const s = static_cast<const uv_stat_t*>(req.ptr);
     rc = !!(s->st_mode & S_IFDIR);
   }
-  uv_fs_req_cleanup(&req);
+  archive::uv_fs_req_cleanup(&req);
 
   args.GetReturnValue().Set(rc);
 }
@@ -931,12 +932,12 @@ static void Stat(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2], use_bigint);
   if (req_wrap_async != nullptr) {  // stat(path, use_bigint, req)
     AsyncCall(env, req_wrap_async, args, "stat", UTF8, AfterStat,
-              uv_fs_stat, *path);
+              archive::uv_fs_stat, *path);
   } else {  // stat(path, use_bigint, undefined, ctx)
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(stat);
-    int err = SyncCall(env, args[3], &req_wrap_sync, "stat", uv_fs_stat, *path);
+    int err = SyncCall(env, args[3], &req_wrap_sync, "stat", archive::uv_fs_stat, *path);
     FS_SYNC_TRACE_END(stat);
     if (err != 0) {
       return;  // error info is in ctx
@@ -961,12 +962,12 @@ static void LStat(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2], use_bigint);
   if (req_wrap_async != nullptr) {  // lstat(path, use_bigint, req)
     AsyncCall(env, req_wrap_async, args, "lstat", UTF8, AfterStat,
-              uv_fs_lstat, *path);
+              archive::uv_fs_lstat, *path);
   } else {  // lstat(path, use_bigint, undefined, ctx)
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(lstat);
-    int err = SyncCall(env, args[3], &req_wrap_sync, "lstat", uv_fs_lstat,
+    int err = SyncCall(env, args[3], &req_wrap_sync, "lstat", archive::uv_fs_lstat,
                        *path);
     FS_SYNC_TRACE_END(lstat);
     if (err != 0) {
@@ -992,12 +993,12 @@ static void FStat(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2], use_bigint);
   if (req_wrap_async != nullptr) {  // fstat(fd, use_bigint, req)
     AsyncCall(env, req_wrap_async, args, "fstat", UTF8, AfterStat,
-              uv_fs_fstat, fd);
+              archive::uv_fs_fstat, fd);
   } else {  // fstat(fd, use_bigint, undefined, ctx)
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(fstat);
-    int err = SyncCall(env, args[3], &req_wrap_sync, "fstat", uv_fs_fstat, fd);
+    int err = SyncCall(env, args[3], &req_wrap_sync, "fstat", archive::uv_fs_fstat, fd);
     FS_SYNC_TRACE_END(fstat);
     if (err != 0) {
       return;  // error info is in ctx
@@ -1026,13 +1027,13 @@ static void Symlink(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // symlink(target, path, flags, req)
     AsyncDestCall(env, req_wrap_async, args, "symlink", *path, path.length(),
-                  UTF8, AfterNoArgs, uv_fs_symlink, *target, *path, flags);
+                  UTF8, AfterNoArgs, archive::uv_fs_symlink, *target, *path, flags);
   } else {  // symlink(target, path, flags, undefinec, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(symlink);
     SyncCall(env, args[4], &req_wrap_sync, "symlink",
-             uv_fs_symlink, *target, *path, flags);
+             archive::uv_fs_symlink, *target, *path, flags);
     FS_SYNC_TRACE_END(symlink);
   }
 }
@@ -1052,13 +1053,13 @@ static void Link(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
   if (req_wrap_async != nullptr) {  // link(src, dest, req)
     AsyncDestCall(env, req_wrap_async, args, "link", *dest, dest.length(), UTF8,
-                  AfterNoArgs, uv_fs_link, *src, *dest);
+                  AfterNoArgs, archive::uv_fs_link, *src, *dest);
   } else {  // link(src, dest)
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(link);
     SyncCall(env, args[3], &req_wrap_sync, "link",
-             uv_fs_link, *src, *dest);
+             archive::uv_fs_link, *src, *dest);
     FS_SYNC_TRACE_END(link);
   }
 }
@@ -1077,13 +1078,13 @@ static void ReadLink(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
   if (req_wrap_async != nullptr) {  // readlink(path, encoding, req)
     AsyncCall(env, req_wrap_async, args, "readlink", encoding, AfterStringPtr,
-              uv_fs_readlink, *path);
+              archive::uv_fs_readlink, *path);
   } else {
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(readlink);
     int err = SyncCall(env, args[3], &req_wrap_sync, "readlink",
-                       uv_fs_readlink, *path);
+                       archive::uv_fs_readlink, *path);
     FS_SYNC_TRACE_END(readlink);
     if (err < 0) {
       return;  // syscall failed, no need to continue, error info is in ctx
@@ -1119,13 +1120,13 @@ static void Rename(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
   if (req_wrap_async != nullptr) {
     AsyncDestCall(env, req_wrap_async, args, "rename", *new_path,
-                  new_path.length(), UTF8, AfterNoArgs, uv_fs_rename,
+                  new_path.length(), UTF8, AfterNoArgs, archive::uv_fs_rename,
                   *old_path, *new_path);
   } else {
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(rename);
-    SyncCall(env, args[3], &req_wrap_sync, "rename", uv_fs_rename,
+    SyncCall(env, args[3], &req_wrap_sync, "rename", archive::uv_fs_rename,
              *old_path, *new_path);
     FS_SYNC_TRACE_END(rename);
   }
@@ -1146,12 +1147,12 @@ static void FTruncate(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
   if (req_wrap_async != nullptr) {
     AsyncCall(env, req_wrap_async, args, "ftruncate", UTF8, AfterNoArgs,
-              uv_fs_ftruncate, fd, len);
+              archive::uv_fs_ftruncate, fd, len);
   } else {
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(ftruncate);
-    SyncCall(env, args[3], &req_wrap_sync, "ftruncate", uv_fs_ftruncate, fd,
+    SyncCall(env, args[3], &req_wrap_sync, "ftruncate", archive::uv_fs_ftruncate, fd,
              len);
     FS_SYNC_TRACE_END(ftruncate);
   }
@@ -1169,12 +1170,12 @@ static void Fdatasync(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[1]);
   if (req_wrap_async != nullptr) {
     AsyncCall(env, req_wrap_async, args, "fdatasync", UTF8, AfterNoArgs,
-              uv_fs_fdatasync, fd);
+              archive::uv_fs_fdatasync, fd);
   } else {
     CHECK_EQ(argc, 3);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(fdatasync);
-    SyncCall(env, args[2], &req_wrap_sync, "fdatasync", uv_fs_fdatasync, fd);
+    SyncCall(env, args[2], &req_wrap_sync, "fdatasync", archive::uv_fs_fdatasync, fd);
     FS_SYNC_TRACE_END(fdatasync);
   }
 }
@@ -1191,12 +1192,12 @@ static void Fsync(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[1]);
   if (req_wrap_async != nullptr) {
     AsyncCall(env, req_wrap_async, args, "fsync", UTF8, AfterNoArgs,
-              uv_fs_fsync, fd);
+              archive::uv_fs_fsync, fd);
   } else {
     CHECK_EQ(argc, 3);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(fsync);
-    SyncCall(env, args[2], &req_wrap_sync, "fsync", uv_fs_fsync, fd);
+    SyncCall(env, args[2], &req_wrap_sync, "fsync", archive::uv_fs_fsync, fd);
     FS_SYNC_TRACE_END(fsync);
   }
 }
@@ -1213,12 +1214,12 @@ static void Unlink(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[1]);
   if (req_wrap_async != nullptr) {
     AsyncCall(env, req_wrap_async, args, "unlink", UTF8, AfterNoArgs,
-              uv_fs_unlink, *path);
+              archive::uv_fs_unlink, *path);
   } else {
     CHECK_EQ(argc, 3);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(unlink);
-    SyncCall(env, args[2], &req_wrap_sync, "unlink", uv_fs_unlink, *path);
+    SyncCall(env, args[2], &req_wrap_sync, "unlink", archive::uv_fs_unlink, *path);
     FS_SYNC_TRACE_END(unlink);
   }
 }
@@ -1235,13 +1236,13 @@ static void RMDir(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[1]);  // rmdir(path, req)
   if (req_wrap_async != nullptr) {
     AsyncCall(env, req_wrap_async, args, "rmdir", UTF8, AfterNoArgs,
-              uv_fs_rmdir, *path);
+              archive::uv_fs_rmdir, *path);
   } else {  // rmdir(path, undefined, ctx)
     CHECK_EQ(argc, 3);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(rmdir);
     SyncCall(env, args[2], &req_wrap_sync, "rmdir",
-             uv_fs_rmdir, *path);
+             archive::uv_fs_rmdir, *path);
     FS_SYNC_TRACE_END(rmdir);
   }
 }
@@ -1253,7 +1254,7 @@ int MKDirpSync(uv_loop_t* loop, uv_fs_t* req, const std::string& path, int mode,
 
   while (continuation_data.paths.size() > 0) {
     std::string next_path = continuation_data.PopPath();
-    int err = uv_fs_mkdir(loop, req, next_path.c_str(), mode, nullptr);
+    int err = archive::uv_fs_mkdir(loop, req, next_path.c_str(), mode, nullptr);
     while (true) {
       switch (err) {
         case 0:
@@ -1277,15 +1278,15 @@ int MKDirpSync(uv_loop_t* loop, uv_fs_t* req, const std::string& path, int mode,
           return err;
         }
         default:
-          uv_fs_req_cleanup(req);
-          err = uv_fs_stat(loop, req, next_path.c_str(), nullptr);
+          archive::uv_fs_req_cleanup(req);
+          err = archive::uv_fs_stat(loop, req, next_path.c_str(), nullptr);
           if (err == 0 && !S_ISDIR(req->statbuf.st_mode)) return UV_EEXIST;
           if (err < 0) return err;
           break;
       }
       break;
     }
-    uv_fs_req_cleanup(req);
+    archive::uv_fs_req_cleanup(req);
   }
 
   return 0;
@@ -1306,7 +1307,7 @@ int MKDirpAsync(uv_loop_t* loop,
 
   // on each iteration of algorithm, mkdir directory on top of stack.
   std::string next_path = req_wrap->continuation_data->PopPath();
-  int err = uv_fs_mkdir(loop, req, next_path.c_str(), mode,
+  int err = archive::uv_fs_mkdir(loop, req, next_path.c_str(), mode,
                         uv_fs_callback_t{[](uv_fs_t* req) {
     FSReqBase* req_wrap = FSReqBase::from_req(req);
     Environment* env = req_wrap->env();
@@ -1320,7 +1321,7 @@ int MKDirpAsync(uv_loop_t* loop,
           if (req_wrap->continuation_data->paths.size() == 0) {
             req_wrap->continuation_data->Done(0);
           } else {
-            uv_fs_req_cleanup(req);
+            archive::uv_fs_req_cleanup(req);
             MKDirpAsync(loop, req, path.c_str(),
                         req_wrap->continuation_data->mode, nullptr);
           }
@@ -1336,7 +1337,7 @@ int MKDirpAsync(uv_loop_t* loop,
             err = UV_EEXIST;
             continue;
           }
-          uv_fs_req_cleanup(req);
+          archive::uv_fs_req_cleanup(req);
           MKDirpAsync(loop, req, path.c_str(),
                       req_wrap->continuation_data->mode, nullptr);
           break;
@@ -1348,13 +1349,13 @@ int MKDirpAsync(uv_loop_t* loop,
         default:
           if (err == UV_EEXIST &&
               req_wrap->continuation_data->paths.size() > 0) {
-            uv_fs_req_cleanup(req);
+            archive::uv_fs_req_cleanup(req);
             MKDirpAsync(loop, req, path.c_str(),
                         req_wrap->continuation_data->mode, nullptr);
           } else {
             // verify that the path pointed to is actually a directory.
-            uv_fs_req_cleanup(req);
-            int err = uv_fs_stat(loop, req, path.c_str(),
+            archive::uv_fs_req_cleanup(req);
+            int err = archive::uv_fs_stat(loop, req, path.c_str(),
                                  uv_fs_callback_t{[](uv_fs_t* req) {
               FSReqBase* req_wrap = FSReqBase::from_req(req);
               int err = req->result;
@@ -1390,7 +1391,7 @@ static void MKDir(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // mkdir(path, mode, req)
     AsyncCall(env, req_wrap_async, args, "mkdir", UTF8,
-              AfterNoArgs, mkdirp ? MKDirpAsync : uv_fs_mkdir, *path, mode);
+              AfterNoArgs, mkdirp ? MKDirpAsync : archive::uv_fs_mkdir, *path, mode);
   } else {  // mkdir(path, mode, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
@@ -1400,7 +1401,7 @@ static void MKDir(const FunctionCallbackInfo<Value>& args) {
                MKDirpSync, *path, mode);
     } else {
       SyncCall(env, args[4], &req_wrap_sync, "mkdir",
-               uv_fs_mkdir, *path, mode);
+               archive::uv_fs_mkdir, *path, mode);
     }
     FS_SYNC_TRACE_END(mkdir);
   }
@@ -1420,13 +1421,13 @@ static void RealPath(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
   if (req_wrap_async != nullptr) {  // realpath(path, encoding, req)
     AsyncCall(env, req_wrap_async, args, "realpath", encoding, AfterStringPtr,
-              uv_fs_realpath, *path);
+              archive::uv_fs_realpath, *path);
   } else {  // realpath(path, encoding, undefined, ctx)
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(realpath);
     int err = SyncCall(env, args[3], &req_wrap_sync, "realpath",
-                       uv_fs_realpath, *path);
+                       archive::uv_fs_realpath, *path);
     FS_SYNC_TRACE_END(realpath);
     if (err < 0) {
       return;  // syscall failed, no need to continue, error info is in ctx
@@ -1466,17 +1467,17 @@ static void ReadDir(const FunctionCallbackInfo<Value>& args) {
   if (req_wrap_async != nullptr) {  // readdir(path, encoding, withTypes, req)
     if (with_types) {
       AsyncCall(env, req_wrap_async, args, "scandir", encoding,
-                AfterScanDirWithTypes, uv_fs_scandir, *path, 0 /*flags*/);
+                AfterScanDirWithTypes, archive::uv_fs_scandir, *path, 0 /*flags*/);
     } else {
       AsyncCall(env, req_wrap_async, args, "scandir", encoding,
-                AfterScanDir, uv_fs_scandir, *path, 0 /*flags*/);
+                AfterScanDir, archive::uv_fs_scandir, *path, 0 /*flags*/);
     }
   } else {  // readdir(path, encoding, withTypes, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(readdir);
     int err = SyncCall(env, args[4], &req_wrap_sync, "scandir",
-                       uv_fs_scandir, *path, 0 /*flags*/);
+                       archive::uv_fs_scandir, *path, 0 /*flags*/);
     FS_SYNC_TRACE_END(readdir);
     if (err < 0) {
       return;  // syscall failed, no need to continue, error info is in ctx
@@ -1500,7 +1501,7 @@ static void ReadDir(const FunctionCallbackInfo<Value>& args) {
     for (int i = 0; ; i++) {
       uv_dirent_t ent;
 
-      r = uv_fs_scandir_next(&(req_wrap_sync.req), &ent);
+      r = archive::uv_fs_scandir_next(&(req_wrap_sync.req), &ent);
       if (r == UV_EOF)
         break;
       if (r != 0) {
@@ -1592,13 +1593,13 @@ static void Open(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // open(path, flags, mode, req)
     AsyncCall(env, req_wrap_async, args, "open", UTF8, AfterInteger,
-              uv_fs_open, *path, flags, mode);
+              archive::uv_fs_open, *path, flags, mode);
   } else {  // open(path, flags, mode, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(open);
     int result = SyncCall(env, args[4], &req_wrap_sync, "open",
-                          uv_fs_open, *path, flags, mode);
+                          archive::uv_fs_open, *path, flags, mode);
     FS_SYNC_TRACE_END(open);
     args.GetReturnValue().Set(result);
   }
@@ -1622,13 +1623,13 @@ static void OpenFileHandle(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // openFileHandle(path, flags, mode, req)
     AsyncCall(env, req_wrap_async, args, "open", UTF8, AfterOpenFileHandle,
-              uv_fs_open, *path, flags, mode);
+              archive::uv_fs_open, *path, flags, mode);
   } else {  // openFileHandle(path, flags, mode, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(open);
     int result = SyncCall(env, args[4], &req_wrap_sync, "open",
-                          uv_fs_open, *path, flags, mode);
+                          archive::uv_fs_open, *path, flags, mode);
     FS_SYNC_TRACE_END(open);
     if (result < 0) {
       return;  // syscall failed, no need to continue, error info is in ctx
@@ -1658,13 +1659,13 @@ static void CopyFile(const FunctionCallbackInfo<Value>& args) {
   if (req_wrap_async != nullptr) {  // copyFile(src, dest, flags, req)
     AsyncDestCall(env, req_wrap_async, args, "copyfile",
                   *dest, dest.length(), UTF8, AfterNoArgs,
-                  uv_fs_copyfile, *src, *dest, flags);
+                  archive::uv_fs_copyfile, *src, *dest, flags);
   } else {  // copyFile(src, dest, flags, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(copyfile);
     SyncCall(env, args[4], &req_wrap_sync, "copyfile",
-             uv_fs_copyfile, *src, *dest, flags);
+             archive::uv_fs_copyfile, *src, *dest, flags);
     FS_SYNC_TRACE_END(copyfile);
   }
 }
@@ -1711,13 +1712,13 @@ static void WriteBuffer(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[5]);
   if (req_wrap_async != nullptr) {  // write(fd, buffer, off, len, pos, req)
     AsyncCall(env, req_wrap_async, args, "write", UTF8, AfterInteger,
-              uv_fs_write, fd, &uvbuf, 1, pos);
+              archive::uv_fs_write, fd, &uvbuf, 1, pos);
   } else {  // write(fd, buffer, off, len, pos, undefined, ctx)
     CHECK_EQ(argc, 7);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(write);
     int bytesWritten = SyncCall(env, args[6], &req_wrap_sync, "write",
-                                uv_fs_write, fd, &uvbuf, 1, pos);
+                                archive::uv_fs_write, fd, &uvbuf, 1, pos);
     FS_SYNC_TRACE_END(write, "bytesWritten", bytesWritten);
     args.GetReturnValue().Set(bytesWritten);
   }
@@ -1756,13 +1757,13 @@ static void WriteBuffers(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // writeBuffers(fd, chunks, pos, req)
     AsyncCall(env, req_wrap_async, args, "write", UTF8, AfterInteger,
-              uv_fs_write, fd, *iovs, iovs.length(), pos);
+              archive::uv_fs_write, fd, *iovs, iovs.length(), pos);
   } else {  // writeBuffers(fd, chunks, pos, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(write);
     int bytesWritten = SyncCall(env, args[4], &req_wrap_sync, "write",
-                                uv_fs_write, fd, *iovs, iovs.length(), pos);
+                                archive::uv_fs_write, fd, *iovs, iovs.length(), pos);
     FS_SYNC_TRACE_END(write, "bytesWritten", bytesWritten);
     args.GetReturnValue().Set(bytesWritten);
   }
@@ -1827,7 +1828,7 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
     len = StringBytes::Write(env->isolate(), *stack_buffer, len, args[1], enc);
     stack_buffer.SetLengthAndZeroTerminate(len);
     uv_buf_t uvbuf = uv_buf_init(*stack_buffer, len);
-    int err = req_wrap_async->Dispatch(uv_fs_write,
+    int err = req_wrap_async->Dispatch(archive::uv_fs_write,
                                        fd,
                                        &uvbuf,
                                        1,
@@ -1859,7 +1860,7 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
     uv_buf_t uvbuf = uv_buf_init(buf, len);
     FS_SYNC_TRACE_BEGIN(write);
     int bytesWritten = SyncCall(env, args[5], &req_wrap_sync, "write",
-                                uv_fs_write, fd, &uvbuf, 1, pos);
+                                archive::uv_fs_write, fd, &uvbuf, 1, pos);
     FS_SYNC_TRACE_END(write, "bytesWritten", bytesWritten);
     args.GetReturnValue().Set(bytesWritten);
   }
@@ -1908,13 +1909,13 @@ static void Read(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[5]);
   if (req_wrap_async != nullptr) {  // read(fd, buffer, offset, len, pos, req)
     AsyncCall(env, req_wrap_async, args, "read", UTF8, AfterInteger,
-              uv_fs_read, fd, &uvbuf, 1, pos);
+              archive::uv_fs_read, fd, &uvbuf, 1, pos);
   } else {  // read(fd, buffer, offset, len, pos, undefined, ctx)
     CHECK_EQ(argc, 7);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(read);
     const int bytesRead = SyncCall(env, args[6], &req_wrap_sync, "read",
-                                   uv_fs_read, fd, &uvbuf, 1, pos);
+                                   archive::uv_fs_read, fd, &uvbuf, 1, pos);
     FS_SYNC_TRACE_END(read, "bytesRead", bytesRead);
     args.GetReturnValue().Set(bytesRead);
   }
@@ -1939,13 +1940,13 @@ static void Chmod(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
   if (req_wrap_async != nullptr) {  // chmod(path, mode, req)
     AsyncCall(env, req_wrap_async, args, "chmod", UTF8, AfterNoArgs,
-              uv_fs_chmod, *path, mode);
+              archive::uv_fs_chmod, *path, mode);
   } else {  // chmod(path, mode, undefined, ctx)
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(chmod);
     SyncCall(env, args[3], &req_wrap_sync, "chmod",
-             uv_fs_chmod, *path, mode);
+             archive::uv_fs_chmod, *path, mode);
     FS_SYNC_TRACE_END(chmod);
   }
 }
@@ -1969,13 +1970,13 @@ static void FChmod(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
   if (req_wrap_async != nullptr) {  // fchmod(fd, mode, req)
     AsyncCall(env, req_wrap_async, args, "fchmod", UTF8, AfterNoArgs,
-              uv_fs_fchmod, fd, mode);
+              archive::uv_fs_fchmod, fd, mode);
   } else {  // fchmod(fd, mode, undefined, ctx)
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(fchmod);
     SyncCall(env, args[3], &req_wrap_sync, "fchmod",
-             uv_fs_fchmod, fd, mode);
+             archive::uv_fs_fchmod, fd, mode);
     FS_SYNC_TRACE_END(fchmod);
   }
 }
@@ -2002,13 +2003,13 @@ static void Chown(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // chown(path, uid, gid, req)
     AsyncCall(env, req_wrap_async, args, "chown", UTF8, AfterNoArgs,
-              uv_fs_chown, *path, uid, gid);
+              archive::uv_fs_chown, *path, uid, gid);
   } else {  // chown(path, uid, gid, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(chown);
     SyncCall(env, args[4], &req_wrap_sync, "chown",
-             uv_fs_chown, *path, uid, gid);
+             archive::uv_fs_chown, *path, uid, gid);
     FS_SYNC_TRACE_END(chown);
   }
 }
@@ -2035,13 +2036,13 @@ static void FChown(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // fchown(fd, uid, gid, req)
     AsyncCall(env, req_wrap_async, args, "fchown", UTF8, AfterNoArgs,
-              uv_fs_fchown, fd, uid, gid);
+              archive::uv_fs_fchown, fd, uid, gid);
   } else {  // fchown(fd, uid, gid, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(fchown);
     SyncCall(env, args[4], &req_wrap_sync, "fchown",
-             uv_fs_fchown, fd, uid, gid);
+             archive::uv_fs_fchown, fd, uid, gid);
     FS_SYNC_TRACE_END(fchown);
   }
 }
@@ -2065,13 +2066,13 @@ static void LChown(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // lchown(path, uid, gid, req)
     AsyncCall(env, req_wrap_async, args, "lchown", UTF8, AfterNoArgs,
-              uv_fs_lchown, *path, uid, gid);
+              archive::uv_fs_lchown, *path, uid, gid);
   } else {  // lchown(path, uid, gid, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(lchown);
     SyncCall(env, args[4], &req_wrap_sync, "lchown",
-             uv_fs_lchown, *path, uid, gid);
+             archive::uv_fs_lchown, *path, uid, gid);
     FS_SYNC_TRACE_END(lchown);
   }
 }
@@ -2095,13 +2096,13 @@ static void UTimes(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // utimes(path, atime, mtime, req)
     AsyncCall(env, req_wrap_async, args, "utime", UTF8, AfterNoArgs,
-              uv_fs_utime, *path, atime, mtime);
+              archive::uv_fs_utime, *path, atime, mtime);
   } else {  // utimes(path, atime, mtime, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(utimes);
     SyncCall(env, args[4], &req_wrap_sync, "utime",
-             uv_fs_utime, *path, atime, mtime);
+             archive::uv_fs_utime, *path, atime, mtime);
     FS_SYNC_TRACE_END(utimes);
   }
 }
@@ -2124,13 +2125,13 @@ static void FUTimes(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[3]);
   if (req_wrap_async != nullptr) {  // futimes(fd, atime, mtime, req)
     AsyncCall(env, req_wrap_async, args, "futime", UTF8, AfterNoArgs,
-              uv_fs_futime, fd, atime, mtime);
+              archive::uv_fs_futime, fd, atime, mtime);
   } else {  // futimes(fd, atime, mtime, undefined, ctx)
     CHECK_EQ(argc, 5);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(futimes);
     SyncCall(env, args[4], &req_wrap_sync, "futime",
-             uv_fs_futime, fd, atime, mtime);
+             archive::uv_fs_futime, fd, atime, mtime);
     FS_SYNC_TRACE_END(futimes);
   }
 }
@@ -2149,13 +2150,13 @@ static void Mkdtemp(const FunctionCallbackInfo<Value>& args) {
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
   if (req_wrap_async != nullptr) {  // mkdtemp(tmpl, encoding, req)
     AsyncCall(env, req_wrap_async, args, "mkdtemp", encoding, AfterStringPath,
-              uv_fs_mkdtemp, *tmpl);
+              archive::uv_fs_mkdtemp, *tmpl);
   } else {  // mkdtemp(tmpl, encoding, undefined, ctx)
     CHECK_EQ(argc, 4);
     FSReqWrapSync req_wrap_sync;
     FS_SYNC_TRACE_BEGIN(mkdtemp);
     SyncCall(env, args[3], &req_wrap_sync, "mkdtemp",
-             uv_fs_mkdtemp, *tmpl);
+             archive::uv_fs_mkdtemp, *tmpl);
     FS_SYNC_TRACE_END(mkdtemp);
     const char* path = static_cast<const char*>(req_wrap_sync.req.path);
 

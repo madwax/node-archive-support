@@ -6,6 +6,7 @@
 #include "node.h"
 #include "stream_base.h"
 #include "req_wrap-inl.h"
+#include "archive/manager.h"
 
 namespace node {
 
@@ -321,7 +322,7 @@ class FileHandle : public AsyncWrap, public StreamBase {
     }
 
     ~CloseReq() {
-      uv_fs_req_cleanup(req());
+      archive::uv_fs_req_cleanup(req());
       promise_.Reset();
       ref_.Reset();
     }

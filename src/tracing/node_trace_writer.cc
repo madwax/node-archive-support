@@ -1,4 +1,5 @@
 #include "tracing/node_trace_writer.h"
+#include "archive/manager.h"
 
 #include <string.h>
 #include <fcntl.h>
@@ -51,9 +52,9 @@ NodeTraceWriter::~NodeTraceWriter() {
   uv_fs_t req;
   int err;
   if (fd_ != -1) {
-    err = uv_fs_close(nullptr, &req, fd_, nullptr);
+    err = archive::uv_fs_close(nullptr, &req, fd_, nullptr);
     CHECK_EQ(err, 0);
-    uv_fs_req_cleanup(&req);
+    archive::uv_fs_req_cleanup(&req);
   }
   uv_async_send(&exit_signal_);
   Mutex::ScopedLock scoped_lock(request_mutex_);
@@ -83,13 +84,13 @@ void NodeTraceWriter::OpenNewFileForStreaming() {
   replace_substring(&filepath, "${rotation}", std::to_string(file_num_));
 
   if (fd_ != -1) {
-    CHECK_EQ(uv_fs_close(nullptr, &req, fd_, nullptr), 0);
-    uv_fs_req_cleanup(&req);
+    CHECK_EQ(archive::uv_fs_close(nullptr, &req, fd_, nullptr), 0);
+    archive::uv_fs_req_cleanup(&req);
   }
 
-  fd_ = uv_fs_open(nullptr, &req, filepath.c_str(),
+  fd_ = archive::uv_fs_open(nullptr, &req, filepath.c_str(),
       O_CREAT | O_WRONLY | O_TRUNC, 0644, nullptr);
-  uv_fs_req_cleanup(&req);
+  archive::uv_fs_req_cleanup(&req);
   if (fd_ < 0) {
     fprintf(stderr, "Could not open trace file %s: %s\n",
                     filepath.c_str(),
@@ -179,7 +180,7 @@ void NodeTraceWriter::WriteToFile(std::string&& str, int highest_request_id) {
 }
 
 void NodeTraceWriter::StartWrite(uv_buf_t buf) {
-  int err = uv_fs_write(
+  int err = archive::uv_fs_write(
       tracing_loop_, &write_req_, fd_, &buf, 1, -1,
       [](uv_fs_t* req) {
         NodeTraceWriter* writer =
@@ -191,7 +192,7 @@ void NodeTraceWriter::StartWrite(uv_buf_t buf) {
 
 void NodeTraceWriter::AfterWrite() {
   CHECK_GE(write_req_.result, 0);
-  uv_fs_req_cleanup(&write_req_);
+  archive::uv_fs_req_cleanup(&write_req_);
 
   uv_buf_t buf = uv_buf_init(nullptr, 0);
   {

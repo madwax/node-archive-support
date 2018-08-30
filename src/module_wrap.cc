@@ -10,6 +10,7 @@
 #include "node_internals.h"
 #include "node_contextify.h"
 #include "node_watchdog.h"
+#include "archive/manager.h"
 
 namespace node {
 namespace loader {
@@ -435,14 +436,14 @@ std::string ReadFile(uv_file file) {
   int r;
 
   do {
-    r = uv_fs_read(uv_default_loop(),
+    r = archive::uv_fs_read(uv_default_loop(),
                    &req,
                    file,
                    &buf,
                    1,
                    contents.length(),  // offset
                    nullptr);
-    uv_fs_req_cleanup(&req);
+    archive::uv_fs_req_cleanup(&req);
 
     if (r <= 0)
       break;
@@ -463,26 +464,26 @@ Maybe<uv_file> CheckFile(const std::string& path,
     return Nothing<uv_file>();
   }
 
-  uv_file fd = uv_fs_open(nullptr, &fs_req, path.c_str(), O_RDONLY, 0, nullptr);
-  uv_fs_req_cleanup(&fs_req);
+  uv_file fd = archive::uv_fs_open(nullptr, &fs_req, path.c_str(), O_RDONLY, 0, nullptr);
+  archive::uv_fs_req_cleanup(&fs_req);
 
   if (fd < 0) {
     return Nothing<uv_file>();
   }
 
-  uv_fs_fstat(nullptr, &fs_req, fd, nullptr);
+  archive::uv_fs_fstat(nullptr, &fs_req, fd, nullptr);
   uint64_t is_directory = fs_req.statbuf.st_mode & S_IFDIR;
-  uv_fs_req_cleanup(&fs_req);
+  archive::uv_fs_req_cleanup(&fs_req);
 
   if (is_directory) {
-    CHECK_EQ(0, uv_fs_close(nullptr, &fs_req, fd, nullptr));
-    uv_fs_req_cleanup(&fs_req);
+    CHECK_EQ(0, archive::uv_fs_close(nullptr, &fs_req, fd, nullptr));
+    archive::uv_fs_req_cleanup(&fs_req);
     return Nothing<uv_file>();
   }
 
   if (opt == CLOSE_AFTER_CHECK) {
-    CHECK_EQ(0, uv_fs_close(nullptr, &fs_req, fd, nullptr));
-    uv_fs_req_cleanup(&fs_req);
+    CHECK_EQ(0, archive::uv_fs_close(nullptr, &fs_req, fd, nullptr));
+    archive::uv_fs_req_cleanup(&fs_req);
   }
 
   return Just(fd);
@@ -510,8 +511,8 @@ const PackageConfig& GetPackageConfig(Environment* env,
 
   std::string pkg_src = ReadFile(check.FromJust());
   uv_fs_t fs_req;
-  CHECK_EQ(0, uv_fs_close(nullptr, &fs_req, check.FromJust(), nullptr));
-  uv_fs_req_cleanup(&fs_req);
+  CHECK_EQ(0, archive::uv_fs_close(nullptr, &fs_req, check.FromJust(), nullptr));
+  archive::uv_fs_req_cleanup(&fs_req);
 
   Local<String> src;
   if (!String::NewFromUtf8(isolate,
